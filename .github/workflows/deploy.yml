@@ -1,0 +1,46 @@
+name: deploy
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: owner/name of the app repo
+        required: true
+      image:
+        description: Docker Hub image without tag
+        required: true
+      version:
+        required: true
+      port:
+        required: true
+jobs:
+  deploy:
+    runs-on: [self-hosted, portfolio-vm]
+    env:
+      REPO: ${{ inputs.repo }}
+      IMAGE: ${{ inputs.image }}
+      VERSION: ${{ inputs.version }}
+      PORT: ${{ inputs.port }}
+    steps:
+      - name: Check port
+        run: |
+          NAME="${REPO#*/}"
+          BUSY=$(docker ps --format '{{.Names}} {{.Ports}}' | grep ":${PORT}->" | grep -v "^${NAME} " || true)
+          if [ -n "$BUSY" ]; then echo "Port $PORT already used by: $BUSY"; exit 1; fi
+      - name: Wait for image on Docker Hub
+        run: |
+          for i in $(seq 1 90); do docker pull "$IMAGE:$VERSION" && exit 0; sleep 10; done
+          exit 1
+      - name: Deploy with docker compose
+        run: |
+          rm -rf work
+          git clone --depth 1 "https://github.com/$REPO" work
+          cd work
+          TAG=$VERSION docker compose up -d --pull always
+      - name: Health check
+        run: |
+          for i in $(seq 1 30); do
+            R=$(curl -fsS http://127.0.0.1:$PORT/api/health || true)
+            echo "$R" | grep -q "\"version\":\"$VERSION\"" && exit 0
+            sleep 2
+          done
+          exit 1
